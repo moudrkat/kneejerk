@@ -612,19 +612,20 @@ struct systemone {
         // as the text tokens, one entry per position: what llama-server does for a model that reads its prompt in
         // one batch (add_prompt_mixed). The encoder outputs must outlive llama_process().
         std::unordered_map<int32_t, const float *> media_embd; // first token index of a chunk -> its embeddings
-        media_encode_ms = 0;
         if (task.tokens.has_mtmd && !task.tokens.map_idx_to_media.empty()) {
             if (!mctx) {
                 throw std::runtime_error("this model was loaded without a projector (mmproj), it cannot read images");
             }
             const auto t_enc = std::chrono::steady_clock::now();
             const size_t n_in = (size_t) llama_model_n_embd_inp(model);
-            if (media_cache.size() >= 8) {
+            if (media_cache.size() >= 64) {
                 media_cache.clear(); // before the loop: the pointers taken below must stay valid
             }
             for (const auto & [start, chunk] : task.tokens.map_idx_to_media) {
+                // one picture can be several chunks (tiles and a thumbnail) that share the picture's id:
+                // the key is the picture and where the chunk sits in the prompt
                 const char * cid = mtmd_input_chunk_get_id(chunk.get());
-                const std::string id = cid ? cid : "";
+                const std::string id = cid && cid[0] ? std::string(cid) + ":" + std::to_string(start) : "";
                 const size_t n_floats = mtmd_input_chunk_get_n_tokens(chunk.get()) * n_in;
                 auto hit = id.empty() ? media_cache.end() : media_cache.find(id);
                 if (hit == media_cache.end() || hit->second.size() != n_floats) {
@@ -636,11 +637,11 @@ struct systemone {
                     if (!embd) {
                         throw std::runtime_error("the image encoder returned nothing");
                     }
-                    hit = media_cache.insert_or_assign(id.empty() ? std::to_string(start) : id, std::vector<float>(embd, embd + n_floats)).first;
+                    hit = media_cache.insert_or_assign(id.empty() ? "?:" + std::to_string(start) : id, std::vector<float>(embd, embd + n_floats)).first;
                 }
                 media_embd[(int32_t) start] = hit->second.data();
             }
-            media_encode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_enc).count();
+            media_encode_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_enc).count();
         }
         const size_t n_embd_inp = (size_t) llama_model_n_embd_inp(model);
         const bool   is_mrope   = mctx && mtmd_decode_use_mrope(mctx);
@@ -1093,6 +1094,7 @@ private:
                 return error_json("this decision model does not read images", "not_supported_error");
             }
             const mtmd_helper_init_opt media_opt = mtmd_helper_init_opt_default();
+            media_encode_ms = 0;
 
             std::vector<server_task> tasks;
             if (decision.is_joint()) {
@@ -1262,12 +1264,8 @@ systemone * systemone_load(const char * model_path, const systemone_params * par
         mp.media_marker    = get_media_marker();
         mp.flash_attn_type = cparams.flash_attn_type;
         mp.warmup          = false;
-        // the image shares one batch with the text: leave the text half of it
-        const int n_max = (int) so->n_ctx / 2;
-        if (mp.image_max_tokens <= 0 || mp.image_max_tokens > n_max) {
-            mp.image_max_tokens = n_max;
-            if (mp.image_min_tokens > n_max) mp.image_min_tokens = n_max;
-        }
+        // image_min_tokens / image_max_tokens stay at their defaults: the projector's own metadata decides the
+        // resolution, as in llama-server. A picture that does not fit the context is an error at request time.
         so->mctx = mtmd_init_from_file(params.mmproj_path, so->model, mp);
         if (!so->mctx) {
             fprintf(stderr, "systemone: failed to load the projector %s\n", params.mmproj_path);

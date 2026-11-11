@@ -1,0 +1,16 @@
+tests/images.py on aorus, 11 November 2026: one photo and four questions (two choice, two noul) through
+systemone-cli with --mmproj and through a llama-server built from the same source with the same projector.
+d1-omni-600M-Q8_0 + mmproj-d1-omni-600M-Q8_0, CPU, 8 threads.
+
+picture                     tokens (4 questions)   largest difference   cli, second run
+720x860 PNG (tiled)         7301                   0.0000               7060 ms
+397x448 JPEG                 877                   0.0000                675 ms
+284x320 JPEG                 565                   0.0000                447 ms
+227x256 JPEG                 493                   0.0000                382 ms
+
+4 threads: 1176 / 769 / 645 ms for the three small sizes. The picture is encoded once per request
+(159 / 81 / 65 ms at 8 threads), the questions share it.
+
+Two bugs the comparison found before this table: the image token limit was overridden instead of left to
+the projector's metadata (wrong resolution, 0.83 off), and the embedding cache was keyed by the picture
+alone while a large picture is several chunks (tiles), so they overwrote each other (NaN, 0.31 off).
