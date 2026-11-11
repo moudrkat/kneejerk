@@ -20,6 +20,7 @@ static void usage(const char * argv0) {
             "  --info       print what the model is made of (JSON) and exit\n"
             "  --time       adds \"_wall_ms\" to every answer\n"
             "  --no-repack  no repacked copy of the weights: about half the RAM, slower on ARM\n"
+            "  --mmproj F   the projector of a multimodal model; requests can then carry \"images\": [data URLs]\n"
             "  --no-flash-attn  plain attention, so \"layers\": true can return the attention maps\n",
             argv0);
 }
@@ -48,6 +49,8 @@ int main(int argc, char ** argv) {
             params.n_threads = atoi(next("-t"));
         } else if (a == "--info") {
             info = true;
+        } else if (a == "--mmproj") {
+            params.mmproj_path = next("--mmproj");
         } else if (a == "--no-flash-attn") {
             params.flash_attn = false;
         } else if (a == "--no-repack") {

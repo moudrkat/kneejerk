@@ -21,6 +21,8 @@ typedef struct systemone_params {
     bool verbose;           // llama.cpp logs to stderr
     bool repack;            // CPU weight repacking: faster kernels, but the weights are held twice in RAM (default true)
     bool flash_attn;        // fused attention (default true); false materialises the attention maps, which "layers" then returns
+    const char * mmproj_path; // the projector (mmproj GGUF) of a multimodal model, NULL = text only. With it, a request
+                              // can carry "images": ["data:image/jpeg;base64,..."] (d1, d1-omni, ...)
 } systemone_params;
 
 systemone_params systemone_default_params(void);

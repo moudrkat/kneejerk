@@ -30,13 +30,14 @@ public class KneejerkPlugin extends Plugin {
         final int threads = call.getInt("threads", 0);
         final int nCtx = call.getInt("nCtx", 4096);
         final boolean repack = call.getBoolean("repack", true);
+        final String mmproj = call.getString("mmproj");
         worker.execute(() -> {
             try {
                 if (model != null) {
                     model.close();
                     model = null;
                 }
-                model = Kneejerk.load(path, threads, nCtx, repack);
+                model = Kneejerk.load(path, threads, nCtx, repack, mmproj);
                 JSObject ret = new JSObject();
                 ret.put("modelType", model.modelType());
                 ret.put("path", path);

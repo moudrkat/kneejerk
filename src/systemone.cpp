@@ -122,6 +122,8 @@ std::string error_json(const std::string & message, const char * type) {
 struct systemone {
     llama_model   * model = nullptr;
     llama_context * ctx   = nullptr;
+    mtmd_context  * mctx  = nullptr; // the projector of a multimodal model, null = text only
+    double media_encode_ms = 0;      // the vision encoder, last request
     server_decision_context decision;
     std::string model_name;
     std::string type_name;
@@ -468,7 +470,7 @@ struct systemone {
         lens_tokens_result out;
         const llama_vocab * vocab = llama_model_get_vocab(model);
         for (const llama_token t : tokens) {
-            out.pieces.push_back(common_token_to_piece(vocab, t, true));
+            out.pieces.push_back(t == LLAMA_TOKEN_NULL ? std::string("\xE2\x96\xA7") : common_token_to_piece(vocab, t, true)); // a media position: one square
         }
         const int64_t n_tokens = (int64_t) tokens.size();
         const std::vector<float> * prev = lens_inp.empty() ? nullptr : &lens_inp;
@@ -571,6 +573,7 @@ struct systemone {
     }
 
     ~systemone() {
+        if (mctx)  mtmd_free(mctx);
         if (ctx)   llama_free(ctx);
         if (model) llama_model_free(model);
         if (threadpool) ggml_threadpool_free(threadpool);
@@ -603,15 +606,37 @@ struct systemone {
         llama_batch_ext * batch = llama_batch_ext_init(ctx);
         std::unique_ptr<llama_batch_ext, void (*)(llama_batch_ext *)> batch_guard(batch, llama_batch_ext_free);
 
+        // Media chunks (an image) are encoded by the projector first; their embeddings then sit in the same batch
+        // as the text tokens, one entry per position: what llama-server does for a model that reads its prompt in
+        // one batch (add_prompt_mixed). The encoder outputs must outlive llama_process().
+        std::vector<mtmd::batch_ptr> media_batches;
+        std::unordered_map<int32_t, const float *> media_embd; // first token index of a chunk -> its embeddings
+        media_encode_ms = 0;
+        if (task.tokens.has_mtmd && !task.tokens.map_idx_to_media.empty()) {
+            if (!mctx) {
+                throw std::runtime_error("this model was loaded without a projector (mmproj), it cannot read images");
+            }
+            const auto t_enc = std::chrono::steady_clock::now();
+            for (const auto & [start, chunk] : task.tokens.map_idx_to_media) {
+                mtmd::batch_ptr mb(mtmd_batch_init(mctx));
+                if (mtmd_batch_add_chunk(mb.get(), chunk.get()) != 0 || mtmd_batch_encode(mb.get()) != 0) {
+                    throw std::runtime_error("failed to encode the image");
+                }
+                const float * embd = mtmd_batch_get_output_embd(mb.get(), chunk.get());
+                if (!embd) {
+                    throw std::runtime_error("the image encoder returned nothing");
+                }
+                media_embd[(int32_t) start] = embd;
+                media_batches.push_back(std::move(mb));
+            }
+            media_encode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_enc).count();
+        }
+        const size_t n_embd_inp = (size_t) llama_model_n_embd_inp(model);
+        const bool   is_mrope   = mctx && mtmd_decode_use_mrope(mctx);
+
         // row in the batch of each prompt position that has an output
         std::vector<int32_t> rows(n_tokens, -1);
-        for (int32_t i = 0; i < n_tokens; i++) {
-            const int32_t idx = llama_batch_ext_add_token(batch, 0, tokens[i]);
-            if (idx < 0) {
-                throw std::runtime_error(string_format("the prompt (%d tokens) does not fit in one batch", n_tokens));
-            }
-            const llama_pos pos = i; // text tokens: one position each, nothing is set by default
-            llama_batch_ext_set_pos(batch, idx, &pos);
+        auto set_outputs = [&](int32_t i, int32_t idx) {
             rows[i] = idx;
             const bool last = i == n_tokens - 1;
             if (!d.labels.empty() && last) {
@@ -623,6 +648,44 @@ struct systemone {
             if (!d.order.empty()) {
                 llama_batch_ext_set_decision_order(batch, idx, (llama_decision_order) d.order[i]);
             }
+        };
+        llama_pos pos_next = 0;
+        for (int32_t i = 0; i < n_tokens; i++) {
+            if (tokens[i] != LLAMA_TOKEN_NULL) {
+                const int32_t idx = llama_batch_ext_add_token(batch, 0, tokens[i]);
+                if (idx < 0) {
+                    throw std::runtime_error(string_format("the prompt (%d tokens) does not fit in one batch", n_tokens));
+                }
+                const llama_pos pos = pos_next++; // text tokens: one position each, nothing is set by default
+                llama_batch_ext_set_pos(batch, idx, &pos);
+                set_outputs(i, idx);
+                continue;
+            }
+            // a media chunk: n entries, one embedding row each
+            const auto it = media_embd.find(i);
+            if (it == media_embd.end()) {
+                throw std::runtime_error("unexpected layout of the media in the prompt");
+            }
+            const mtmd_input_chunk * chunk = task.tokens.find_chunk(i).get();
+            const auto * image   = mtmd_input_chunk_get_tokens_image(chunk);
+            const size_t n_chunk = mtmd_input_chunk_get_n_tokens(chunk);
+            const llama_pos pos_0 = pos_next;
+            for (size_t k = 0; k < n_chunk; k++) {
+                const int32_t idx = llama_batch_ext_add_embd(batch, 0, { it->second + k * n_embd_inp, 1, n_embd_inp });
+                if (idx < 0) {
+                    throw std::runtime_error(string_format("the prompt (%d positions, an image among them) does not fit in one batch", n_tokens));
+                }
+                const llama_pos p = pos_0 + (llama_pos) k;
+                llama_pos pos[4] = { p, p, p, p };
+                if (is_mrope && image) {
+                    const mtmd_decoder_pos rel = mtmd_image_tokens_get_decoder_pos(image, pos_0, k);
+                    pos[0] = rel.t; pos[1] = rel.y; pos[2] = rel.x; pos[3] = rel.z;
+                }
+                llama_batch_ext_set_pos(batch, idx, pos);
+                set_outputs(i + (int32_t) k, idx);
+            }
+            pos_next = pos_0 + (llama_pos) n_chunk;
+            i += (int32_t) n_chunk - 1;
         }
 
         // the layer readout: label logits at the last position, or one embedding column at each option's marker
@@ -800,7 +863,7 @@ struct systemone {
         if (dump) {
             std::string text;
             for (const llama_token t : tokens) {
-                text += common_token_to_piece(vocab, t, true);
+                text += t == LLAMA_TOKEN_NULL ? std::string("\xE2\x96\xA7") : common_token_to_piece(vocab, t, true);
             }
             fprintf(stderr, "--- prompt (%d tokens) ---\n%s\n--- labels %zu groups %zu markers %zu pointer %d order %zu pooled %d ---\n",
                     n_tokens, text.c_str(), d.labels.size(), d.label_groups.size(), d.markers.size(), d.pointer, d.order.size(), (int) d.pooled);
@@ -916,7 +979,7 @@ private:
     json layers_answer(const server_decision_question & question, size_t n_variants, size_t first_task,
                        const std::vector<std::vector<std::vector<float>>> & layer_results,
                        const std::vector<std::vector<double>> & layer_ms_results,
-                       const std::vector<lens_tokens_result> & token_results, const std::string & error) const {
+                       const std::vector<lens_tokens_result> & token_results, const std::string & error, bool has_media = false) const {
         json out = json::object();
         if (!error.empty()) {
             out["error"] = error;
@@ -944,7 +1007,7 @@ private:
                 rows.push_back(nullptr);
                 continue;
             }
-            const json a = decision.format_answer(question, scores, false);
+            const json a = decision.format_answer(question, scores, has_media);
             if (a.contains("noul")) {
                 rows.push_back(a.at("noul").get<double>());
             } else if (a.contains("probabilities")) {
@@ -1012,20 +1075,24 @@ private:
             const auto questions = decision.parse_questions(body);
             std::vector<raw_buffer> files;
             const json state = decision.prepare_state(decision.parse_state(body, files));
-            if (!files.empty()) {
-                return error_json("images and audio are not supported by this library yet, use llama-server", "not_supported_error");
+            if (!files.empty() && !mctx) {
+                return error_json("this model was loaded without a projector (mmproj), it cannot read images", "not_supported_error");
             }
+            if (!files.empty() && !decision.can_use_images()) {
+                return error_json("this decision model does not read images", "not_supported_error");
+            }
+            const mtmd_helper_init_opt media_opt = mtmd_helper_init_opt_default();
 
             std::vector<server_task> tasks;
             if (decision.is_joint()) {
                 server_task task(SERVER_TASK_TYPE_DECISION);
-                decision.fill_task_joint(state, questions, files, nullptr, mtmd_helper_init_opt{}, task);
+                decision.fill_task_joint(state, questions, files, mctx, media_opt, task);
                 tasks.push_back(std::move(task));
             } else {
                 for (const auto & question : questions) {
                     for (size_t variant = 0; variant < decision.n_variants(question); variant++) {
                         server_task task(SERVER_TASK_TYPE_DECISION);
-                        decision.fill_task(state, questions, question, variant, files, nullptr, mtmd_helper_init_opt{}, task);
+                        decision.fill_task(state, questions, question, variant, files, mctx, media_opt, task);
                         tasks.push_back(std::move(task));
                     }
                 }
@@ -1085,15 +1152,18 @@ private:
                         scores.push_back(results[i_result++]);
                     }
                 }
-                json answer = decision.format_answer(question, scores, false);
+                json answer = decision.format_answer(question, scores, !files.empty());
                 if (want_layers) {
-                    answer["layers"] = layers_answer(question, scores.size(), i_result - scores.size(), layer_results, layer_ms_results, token_results, layers_error);
+                    answer["layers"] = layers_answer(question, scores.size(), i_result - scores.size(), layer_results, layer_ms_results, token_results, layers_error, !files.empty());
                 }
                 answers[question.id] = answer;
             }
 
             json usage = json::object();
             usage["input_tokens"]  = n_tokens;
+            if (!files.empty()) {
+                usage["image_encode_ms"] = media_encode_ms;
+            }
             usage["output_tokens"] = 0;
             json out = json::object();
             out["model"]   = model_name;
@@ -1118,6 +1188,7 @@ systemone_params systemone_default_params(void) {
     p.verbose      = false;
     p.repack       = true;
     p.flash_attn   = true;
+    p.mmproj_path  = nullptr;
     return p;
 }
 
@@ -1167,6 +1238,30 @@ systemone * systemone_load(const char * model_path, const systemone_params * par
     }
     if (so->threadpool) {
         llama_attach_threadpool(so->ctx, so->threadpool, so->threadpool);
+    }
+
+    if (params.mmproj_path && params.mmproj_path[0] != '\0') {
+        if (!params.verbose) {
+            mtmd_helper_log_set(quiet_log, nullptr);
+        }
+        mtmd_context_params mp = mtmd_context_params_default();
+        mp.use_gpu         = params.n_gpu_layers != 0;
+        mp.print_timings   = false;
+        mp.n_threads       = so->n_threads;
+        mp.media_marker    = get_media_marker();
+        mp.flash_attn_type = cparams.flash_attn_type;
+        mp.warmup          = false;
+        // the image shares one batch with the text: leave the text half of it
+        const int n_max = (int) so->n_ctx / 2;
+        if (mp.image_max_tokens <= 0 || mp.image_max_tokens > n_max) {
+            mp.image_max_tokens = n_max;
+            if (mp.image_min_tokens > n_max) mp.image_min_tokens = n_max;
+        }
+        so->mctx = mtmd_init_from_file(params.mmproj_path, so->model, mp);
+        if (!so->mctx) {
+            fprintf(stderr, "systemone: failed to load the projector %s\n", params.mmproj_path);
+            return nullptr;
+        }
     }
 
     try {

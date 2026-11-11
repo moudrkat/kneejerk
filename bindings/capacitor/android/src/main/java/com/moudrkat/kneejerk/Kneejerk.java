@@ -18,7 +18,12 @@ public final class Kneejerk implements AutoCloseable {
 
     /** Loads a GGUF; throws when the file cannot be loaded or is not a decision model llama.cpp knows. */
     public static Kneejerk load(String path, int threads, int nCtx, boolean repack) {
-        long h = nativeLoad(path, threads, nCtx, repack);
+        return load(path, threads, nCtx, repack, null);
+    }
+
+    /** With mmproj (the projector GGUF of a multimodal model), requests can carry "images": [data URLs]. */
+    public static Kneejerk load(String path, int threads, int nCtx, boolean repack, String mmproj) {
+        long h = nativeLoad(path, threads, nCtx, repack, mmproj == null ? "" : mmproj);
         if (h == 0) {
             throw new IllegalStateException("kneejerk: failed to load " + path);
         }
@@ -57,7 +62,7 @@ public final class Kneejerk implements AutoCloseable {
         }
     }
 
-    private static native long nativeLoad(String path, int threads, int nCtx, boolean repack);
+    private static native long nativeLoad(String path, int threads, int nCtx, boolean repack, String mmproj);
     private static native String nativeModelType(long handle);
     private static native String nativeDecide(long handle, String requestJson);
     private static native String nativeModelInfo(long handle);

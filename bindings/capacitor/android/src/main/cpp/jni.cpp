@@ -44,7 +44,7 @@ jstring to_java(JNIEnv * env, const std::string & s) {
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_moudrkat_kneejerk_Kneejerk_nativeLoad(JNIEnv * env, jclass, jstring path, jint threads, jint n_ctx, jboolean repack) {
+Java_com_moudrkat_kneejerk_Kneejerk_nativeLoad(JNIEnv * env, jclass, jstring path, jint threads, jint n_ctx, jboolean repack, jstring mmproj) {
     systemone_params p = systemone_default_params();
     p.n_gpu_layers = 0;              // CPU on Android; GPU backends are a later experiment
     p.n_threads    = threads;
@@ -52,6 +52,8 @@ Java_com_moudrkat_kneejerk_Kneejerk_nativeLoad(JNIEnv * env, jclass, jstring pat
     p.repack       = repack == JNI_TRUE;
     p.flash_attn   = false;          // the attention maps are part of what the app shows
     const std::string file = from_java(env, path);
+    const std::string projector = from_java(env, mmproj);
+    p.mmproj_path = projector.empty() ? nullptr : projector.c_str(); // with it, requests can carry images
     LOGI("loading %s (threads %d, n_ctx %u, repack %d)", file.c_str(), p.n_threads, p.n_ctx, (int) p.repack);
     systemone * so = systemone_load(file.c_str(), &p);
     if (!so) {

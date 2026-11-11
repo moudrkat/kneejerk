@@ -14,6 +14,8 @@ export interface LoadOptions {
   nCtx?: number
   /** Repack the weights for the ARM kernels: ~2.6x faster, but the model sits in RAM twice (default true). */
   repack?: boolean
+  /** Absolute path of the projector GGUF (mmproj) of a multimodal model. With it, a request can carry "images": ["data:image/jpeg;base64,..."]. */
+  mmproj?: string
 }
 
 export interface DecideOptions {
