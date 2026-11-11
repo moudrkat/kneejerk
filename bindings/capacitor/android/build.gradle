@@ -31,7 +31,10 @@ android {
                           "-DCMAKE_BUILD_TYPE=Release",                  // llama.cpp at -O0 is unusable, even in a debug app
                           "-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16",  // 2018+ phones; no i8mm, older Pixels lack it
                           "-DKNEEJERK_ROOT=${project.hasProperty('kneejerkRoot') ? project.kneejerkRoot : file('../../..').absolutePath}"
-                cppFlags "-std=c++17"
+                // no build-machine paths in the binary: llama.cpp's asserts and logs carry __FILE__
+                def repoRoot = rootProject.file("${projectDir}/../../..").canonicalPath
+                cFlags "-ffile-prefix-map=${repoRoot}=."
+                cppFlags "-std=c++17", "-ffile-prefix-map=${repoRoot}=."
             }
         }
     }
