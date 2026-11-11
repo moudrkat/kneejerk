@@ -619,6 +619,9 @@ struct systemone {
             }
             const auto t_enc = std::chrono::steady_clock::now();
             const size_t n_in = (size_t) llama_model_n_embd_inp(model);
+            if (media_cache.size() >= 8) {
+                media_cache.clear(); // before the loop: the pointers taken below must stay valid
+            }
             for (const auto & [start, chunk] : task.tokens.map_idx_to_media) {
                 const char * cid = mtmd_input_chunk_get_id(chunk.get());
                 const std::string id = cid ? cid : "";
@@ -632,9 +635,6 @@ struct systemone {
                     const float * embd = mtmd_batch_get_output_embd(mb.get(), chunk.get());
                     if (!embd) {
                         throw std::runtime_error("the image encoder returned nothing");
-                    }
-                    if (media_cache.size() >= 4) {
-                        media_cache.clear();
                     }
                     hit = media_cache.insert_or_assign(id.empty() ? std::to_string(start) : id, std::vector<float>(embd, embd + n_floats)).first;
                 }
