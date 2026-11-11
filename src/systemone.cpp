@@ -124,6 +124,8 @@ struct systemone {
     llama_context * ctx   = nullptr;
     mtmd_context  * mctx  = nullptr; // the projector of a multimodal model, null = text only
     double media_encode_ms = 0;      // the vision encoder, last request
+    // the embeddings of the last pictures by content hash: several questions about one picture encode it once
+    std::unordered_map<std::string, std::vector<float>> media_cache;
     server_decision_context decision;
     std::string model_name;
     std::string type_name;
@@ -609,7 +611,6 @@ struct systemone {
         // Media chunks (an image) are encoded by the projector first; their embeddings then sit in the same batch
         // as the text tokens, one entry per position: what llama-server does for a model that reads its prompt in
         // one batch (add_prompt_mixed). The encoder outputs must outlive llama_process().
-        std::vector<mtmd::batch_ptr> media_batches;
         std::unordered_map<int32_t, const float *> media_embd; // first token index of a chunk -> its embeddings
         media_encode_ms = 0;
         if (task.tokens.has_mtmd && !task.tokens.map_idx_to_media.empty()) {
@@ -617,17 +618,27 @@ struct systemone {
                 throw std::runtime_error("this model was loaded without a projector (mmproj), it cannot read images");
             }
             const auto t_enc = std::chrono::steady_clock::now();
+            const size_t n_in = (size_t) llama_model_n_embd_inp(model);
             for (const auto & [start, chunk] : task.tokens.map_idx_to_media) {
-                mtmd::batch_ptr mb(mtmd_batch_init(mctx));
-                if (mtmd_batch_add_chunk(mb.get(), chunk.get()) != 0 || mtmd_batch_encode(mb.get()) != 0) {
-                    throw std::runtime_error("failed to encode the image");
+                const char * cid = mtmd_input_chunk_get_id(chunk.get());
+                const std::string id = cid ? cid : "";
+                const size_t n_floats = mtmd_input_chunk_get_n_tokens(chunk.get()) * n_in;
+                auto hit = id.empty() ? media_cache.end() : media_cache.find(id);
+                if (hit == media_cache.end() || hit->second.size() != n_floats) {
+                    mtmd::batch_ptr mb(mtmd_batch_init(mctx));
+                    if (mtmd_batch_add_chunk(mb.get(), chunk.get()) != 0 || mtmd_batch_encode(mb.get()) != 0) {
+                        throw std::runtime_error("failed to encode the image");
+                    }
+                    const float * embd = mtmd_batch_get_output_embd(mb.get(), chunk.get());
+                    if (!embd) {
+                        throw std::runtime_error("the image encoder returned nothing");
+                    }
+                    if (media_cache.size() >= 4) {
+                        media_cache.clear();
+                    }
+                    hit = media_cache.insert_or_assign(id.empty() ? std::to_string(start) : id, std::vector<float>(embd, embd + n_floats)).first;
                 }
-                const float * embd = mtmd_batch_get_output_embd(mb.get(), chunk.get());
-                if (!embd) {
-                    throw std::runtime_error("the image encoder returned nothing");
-                }
-                media_embd[(int32_t) start] = embd;
-                media_batches.push_back(std::move(mb));
+                media_embd[(int32_t) start] = hit->second.data();
             }
             media_encode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_enc).count();
         }

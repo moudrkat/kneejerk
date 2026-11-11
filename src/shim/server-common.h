@@ -160,6 +160,14 @@ inline server_tokens process_mtmd_prompt(mtmd_context * mctx, const std::string 
         if (!out.bitmap) {
             throw std::invalid_argument("Failed to load image or audio file");
         }
+        {
+            // the id is a hash of the file: the same picture asked twice is encoded once (see systemone::run)
+            uint64_t h = 1469598103934665603ULL;
+            for (const uint8_t b : file) { h ^= b; h *= 1099511628211ULL; }
+            char id[32];
+            snprintf(id, sizeof(id), "%016llx", (unsigned long long) h);
+            mtmd_bitmap_set_id(out.bitmap, id);
+        }
         bitmaps.entries.emplace_back(out.bitmap);
         if (out.video_ctx) {
             mtmd_helper_video_free(out.video_ctx);
