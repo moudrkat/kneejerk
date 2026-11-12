@@ -9,6 +9,7 @@
   "files": [
     "dist/",
     "android/src",
+    "android/prebuilt",
     "android/build.gradle",
     "android/proguard-rules.pro"
   ],
@@ -33,7 +34,8 @@
     "build": "npm run clean && tsc && rollup -c rollup.config.mjs",
     "clean": "rimraf ./dist",
     "watch": "tsc --watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build && test -f android/prebuilt/arm64-v8a/libkneejerk_jni.so",
+    "prebuilt": "sh scripts/prebuilt-from-apk.sh"
   },
   "devDependencies": {
     "@capacitor/android": "^8.0.0",

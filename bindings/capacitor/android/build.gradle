@@ -14,6 +14,12 @@ buildscript {
 
 apply plugin: 'com.android.library'
 
+// Two ways to get libkneejerk_jni.so. Inside a kneejerk checkout (or with kneejerkRoot set in gradle.properties)
+// it is compiled from source together with llama.cpp. Installed from npm there are no sources, and the package
+// carries the library built for arm64-v8a in android/prebuilt/.
+def kneejerkRootDir = (project.hasProperty('kneejerkRoot') ? file(project.kneejerkRoot) : file('../../..')).canonicalPath
+def kneejerkFromSource = new File(kneejerkRootDir, 'src/systemone.cpp').exists() && new File(kneejerkRootDir, 'CMakeLists.txt').exists()
+
 android {
     namespace = "com.moudrkat.kneejerk"
     compileSdk = project.hasProperty('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 36
@@ -25,23 +31,33 @@ android {
             // 64-bit ARM only: a 2B model does not fit a 32-bit process, and every phone since 2017 is arm64
             abiFilters 'arm64-v8a'
         }
-        externalNativeBuild {
-            cmake {
-                arguments "-DANDROID_STL=c++_shared",
-                          "-DCMAKE_BUILD_TYPE=Release",                  // llama.cpp at -O0 is unusable, even in a debug app
-                          "-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16",  // 2018+ phones; no i8mm, older Pixels lack it
-                          "-DKNEEJERK_ROOT=${project.hasProperty('kneejerkRoot') ? project.kneejerkRoot : file('../../..').absolutePath}"
-                // no build-machine paths in the binary: llama.cpp's asserts and logs carry __FILE__
-                def repoRoot = rootProject.file("${projectDir}/../../..").canonicalPath
-                cFlags "-ffile-prefix-map=${repoRoot}=."
-                cppFlags "-std=c++17", "-ffile-prefix-map=${repoRoot}=."
+        if (kneejerkFromSource) {
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared",
+                              "-DCMAKE_BUILD_TYPE=Release",                  // llama.cpp at -O0 is unusable, even in a debug app
+                              "-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16",  // 2018+ phones; no i8mm, older Pixels lack it
+                              "-DKNEEJERK_ROOT=${kneejerkRootDir}"
+                    // no build-machine paths in the binary: llama.cpp's asserts and logs carry __FILE__
+                    cFlags "-ffile-prefix-map=${kneejerkRootDir}=."
+                    cppFlags "-std=c++17", "-ffile-prefix-map=${kneejerkRootDir}=."
+                }
             }
         }
     }
-    externalNativeBuild {
-        cmake {
-            path "src/main/cpp/CMakeLists.txt"
-            version "3.22.1+"
+    if (kneejerkFromSource) {
+        externalNativeBuild {
+            cmake {
+                path "src/main/cpp/CMakeLists.txt"
+                version "3.22.1+"
+            }
+        }
+    } else {
+        // installed from npm: no kneejerk checkout next to the plugin, so the library comes ready-made
+        sourceSets {
+            main {
+                jniLibs.srcDirs = ['prebuilt']
+            }
         }
     }
     buildTypes {

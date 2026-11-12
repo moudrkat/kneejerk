@@ -11,3 +11,5 @@ bindings/capacitor/dist/
 bindings/capacitor/android/build/
 bindings/capacitor/android/.gradle/
 bindings/capacitor/android/.cxx/
+bindings/capacitor/android/prebuilt/
+bindings/capacitor/capacitor-kneejerk-*.tgz
