@@ -1,5 +1,5 @@
 import { WebPlugin } from '@capacitor/core'
-import type { DecideOptions, DecideResult, KneejerkPlugin, LoadOptions, LoadResult } from './definitions'
+import type { DecideOptions, DecideResult, DownloadOptions, KneejerkPlugin, LoadOptions, LoadResult } from './definitions'
 
 /**
  * On the web there is no native library. Point `serverUrl` at a llama-server (its /v1/systemone
@@ -8,6 +8,10 @@ import type { DecideOptions, DecideResult, KneejerkPlugin, LoadOptions, LoadResu
 export class KneejerkWeb extends WebPlugin implements KneejerkPlugin {
   serverUrl: string | null = null
   private modelType: string | undefined
+
+  async download(_options: DownloadOptions): Promise<{ path: string; bytes: number }> {
+    throw this.unavailable('download is native only')
+  }
 
   async load(options: LoadOptions): Promise<LoadResult> {
     if (!this.serverUrl) {

@@ -19,3 +19,9 @@ in `gradle.properties` points at the kneejerk checkout when the plugin is used f
 
 The model file is the app's business: download it to the app's files directory (wifi only, it is
 1.1 GB for d1-2B) and pass the path. Pixel 8a: 464 ms per yes/no decision with repack, 2.1 GB RSS.
+
+## Downloading a model
+
+`Kneejerk.download({ url, path })` fetches a model file and continues an interrupted download where it
+stopped (HTTP Range, a `.part` file until it is whole). Progress comes as `downloadProgress` events.
+Android only for now.

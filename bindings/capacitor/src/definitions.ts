@@ -33,7 +33,30 @@ export interface DecideResult {
   wallMs: number
 }
 
+export interface DownloadOptions {
+  /** Where the file is, e.g. a Hugging Face resolve URL. */
+  url: string
+  /** Absolute path of the finished file on the device. */
+  path: string
+  /** Dropped connections to ride out before giving up (default 20). */
+  retries?: number
+}
+
+export interface DownloadProgress {
+  path: string
+  bytes: number
+  /** -1 when the server did not say. */
+  total: number
+}
+
 export interface KneejerkPlugin {
+  /**
+   * Downloads a model file and survives interruptions: an attempt continues from the bytes already on the
+   * device (HTTP Range), and the file appears under its name only when it is whole. Android only for now.
+   * Progress arrives as "downloadProgress" events.
+   */
+  download(options: DownloadOptions): Promise<{ path: string; bytes: number }>
+  addListener(eventName: 'downloadProgress', listener: (progress: DownloadProgress) => void): Promise<{ remove: () => Promise<void> }>
   /** Loads a GGUF decision model. One model at a time; loading another unloads the first. */
   load(options: LoadOptions): Promise<LoadResult>
   /** Answers one request. Rejects when no model is loaded. */

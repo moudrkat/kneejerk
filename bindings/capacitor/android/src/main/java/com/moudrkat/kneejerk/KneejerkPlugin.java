@@ -18,7 +18,47 @@ import java.util.concurrent.Executors;
 @CapacitorPlugin(name = "Kneejerk")
 public class KneejerkPlugin extends Plugin {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService downloader = Executors.newSingleThreadExecutor();
     private Kneejerk model;
+
+    /**
+     * Downloads a model file so that an interrupted download continues where it stopped: bytes go to
+     * path + ".part", every new attempt asks the server for the rest (HTTP Range), and the file gets its
+     * name only when complete. A dropped connection is retried here; after the app was killed, calling
+     * download again picks the partial file up.
+     */
+    @PluginMethod
+    public void download(PluginCall call) {
+        final String url = call.getString("url");
+        final String path = call.getString("path");
+        final int retries = call.getInt("retries", 20);
+        if (url == null || url.isEmpty() || path == null || path.isEmpty()) {
+            call.reject("url and path are required");
+            return;
+        }
+        downloader.execute(() -> {
+            try {
+                final long[] lastEvent = {0};
+                final long bytes = ResumableDownload.fetch(url, path, retries, (have, total) -> {
+                    final long now = SystemClock.elapsedRealtime();
+                    if (now - lastEvent[0] > 300) {
+                        lastEvent[0] = now;
+                        JSObject progress = new JSObject();
+                        progress.put("path", path);
+                        progress.put("bytes", have);
+                        progress.put("total", total);
+                        notifyListeners("downloadProgress", progress);
+                    }
+                });
+                JSObject ret = new JSObject();
+                ret.put("path", path);
+                ret.put("bytes", bytes);
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("download failed: " + e.getMessage());
+            }
+        });
+    }
 
     @PluginMethod
     public void load(PluginCall call) {
@@ -134,5 +174,6 @@ public class KneejerkPlugin extends Plugin {
             }
         });
         worker.shutdown();
+        downloader.shutdownNow();
     }
 }
